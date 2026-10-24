@@ -1,9 +1,12 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  // Flask backend
-  static const String baseUrl = 'http://192.168.220.34:5000';
+  static const String _deviceBaseUrl = 'http://192.168.220.34:5000';
+  static String get baseUrl => kIsWeb
+      ? '${Uri.base.scheme}://${Uri.base.host}:5000'
+      : _deviceBaseUrl;
   static const Duration _timeout = Duration(seconds: 4);
 
   // Test backend connection
@@ -181,6 +184,33 @@ class ApiService {
       return response.statusCode == 200;
     } catch (e) {
       return false;
+    }
+  }
+
+  // Send emergency SMS via backend when configured; falls back to device SMS if unavailable.
+  static Future<Map<String, dynamic>> sendEmergencySms({
+    required List<String> phoneNumbers,
+    required String message,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/sms/send'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'phones': phoneNumbers,
+              'message': message,
+            }),
+          )
+          .timeout(_timeout);
+
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map<String, dynamic>) {
+        return decoded;
+      }
+      return {'success': false, 'fallback': 'device', 'error': 'Invalid response'};
+    } catch (e) {
+      return {'success': false, 'fallback': 'device', 'error': 'Cannot connect to server: $e'};
     }
   }
 

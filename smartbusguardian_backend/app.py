@@ -10,6 +10,19 @@ import os
 
 app = Flask(__name__)
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    return response
+
+
+@app.route("/<path:path>", methods=["OPTIONS"])
+def handle_preflight(path):
+    return "", 204
+
+
 DB_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "smartbus.db"
@@ -280,6 +293,12 @@ def add_emergency_contact():
     if not user_id or not contact_name or not contact_phone:
         return jsonify({"error": "user_id, contact_name, and contact_phone are required"}), 400
 
+    if is_emergency_helpline_number(contact_phone):
+        return jsonify({
+            "success": False,
+            "error": "Emergency helpline numbers cannot be saved as trusted contacts"
+        }), 400
+
     db = get_db()
     cur = db.execute(
         """
@@ -304,6 +323,83 @@ def delete_emergency_contact(contact_id):
     db.execute("DELETE FROM tbl_emergency_contact WHERE contact_id = ?", (contact_id,))
     db.commit()
     return jsonify({"success": True, "message": "Emergency contact deleted"}), 200
+
+
+def is_emergency_helpline_number(phone_number):
+    digits = "".join(ch for ch in str(phone_number) if ch.isdigit())
+    helpline_numbers = {"112", "100", "1091", "108", "911", "999", "000"}
+    if digits in helpline_numbers:
+        return True
+    if digits.startswith("91") and digits[2:] in helpline_numbers:
+        return True
+    if digits.startswith("0091") and digits[4:] in helpline_numbers:
+        return True
+    return False
+
+
+@app.route("/api/sms/send", methods=["POST"])
+def send_sms_message():
+    data = request.get_json(silent=True) or {}
+    phones = data.get("phones") or data.get("phone_numbers") or []
+    message = str(data.get("message", "") or "").strip()
+
+    if not phones or not message:
+        return jsonify({
+            "success": False,
+            "fallback": "device",
+            "error": "phones and message are required"
+        }), 400
+
+    normalized_numbers = []
+    for raw_phone in phones:
+        clean_phone = "".join(ch for ch in str(raw_phone) if ch.isdigit() or ch == "+")
+        if clean_phone and not is_emergency_helpline_number(clean_phone):
+            normalized_numbers.append(clean_phone)
+
+    if not normalized_numbers:
+        return jsonify({
+            "success": False,
+            "fallback": "none",
+            "error": "no eligible trusted contact numbers were provided; emergency helplines are excluded"
+        }), 400
+
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+    from_number = os.getenv("TWILIO_FROM_NUMBER")
+
+    if not (account_sid and auth_token and from_number):
+        return jsonify({
+            "success": False,
+            "fallback": "device",
+            "backend": "not_configured",
+            "message": "Backend SMS gateway is not configured. Device SMS fallback will be used."
+        }), 200
+
+    try:
+        from twilio.rest import Client
+
+        client = Client(account_sid, auth_token)
+        for phone_number in normalized_numbers:
+            client.messages.create(
+                body=message,
+                from_=from_number,
+                to=phone_number,
+            )
+
+        return jsonify({
+            "success": True,
+            "fallback": "none",
+            "backend": "twilio",
+            "sent_to": len(normalized_numbers),
+            "message": "Emergency SMS sent successfully via backend"
+        }), 200
+    except Exception as exc:
+        return jsonify({
+            "success": False,
+            "fallback": "device",
+            "backend": "twilio",
+            "error": str(exc)
+        }), 502
 
 
 # ============================================================
