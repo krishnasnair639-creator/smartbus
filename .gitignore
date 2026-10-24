@@ -1,3 +1,27 @@
+# Flutter / Dart ignores
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.pub-cache/
+**/.pub/
+**/*.iml
+.idea/
+.vscode/
+
+# Python / Backend ignores
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.db
+*.sqlite3
+**/venv/
+**/env/
+**/.env
+
+# Miscellaneous
+.DS_Store
+Thumbs.db
 # Miscellaneous
 *.class
 *.log
