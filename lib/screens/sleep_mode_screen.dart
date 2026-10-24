@@ -92,7 +92,7 @@ class _SleepModeScreenState extends State<SleepModeScreen> {
                   Container(
                     padding: const EdgeInsets.all(10),
                     decoration: BoxDecoration(
-                      color: kPrimaryPurple.withOpacity(0.12),
+                      color: kPrimaryPurple.withValues(alpha: 0.12),
                       shape: BoxShape.circle,
                     ),
                     child: Icon(
@@ -127,7 +127,7 @@ class _SleepModeScreenState extends State<SleepModeScreen> {
                   ),
                   Switch(
                     value: _enabled,
-                    activeColor: kPrimaryPurple,
+                    activeThumbColor: kPrimaryPurple,
                     onChanged: (val) => setState(() => _enabled = val),
                   ),
                 ],

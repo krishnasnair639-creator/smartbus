@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'auth_screen.dart';
 import 'destination_screen.dart';
 import 'history_screen.dart';
 import 'map_screen.dart';
@@ -9,6 +8,7 @@ import 'profile_screen.dart';
 import 'notifications_screen.dart';
 import '../services/journey_service.dart';
 import '../services/theme_service.dart';
+import '../services/auth_service.dart';
 
 const Color kPrimaryPurple = Color(0xFF6C4DF6);
 Color get kBackground => AppThemeService.instance.pageBackground;
@@ -50,9 +50,13 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       setState(() {
         if (user != null) {
-          userName = (user['username'] ?? user['name'] ?? user['full_name'])
-              ?.toString()
-              .trim();
+          var rawName = (user['username'] ?? user['name'] ?? user['full_name'])?.toString().trim();
+          // Treat placeholder "Passenger" as missing name
+          if (rawName != null && rawName.toLowerCase() == 'passenger') {
+            userName = null;
+          } else {
+            userName = rawName;
+          }
           userId = user['id'] is int
               ? user['id'] as int
               : int.tryParse(user['id']?.toString() ?? '1') ?? 1;
@@ -176,7 +180,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.06),
+                color: Colors.black.withValues(alpha: 0.06),
                 blurRadius: 8,
                 offset: const Offset(0, 3),
               ),
@@ -268,29 +272,6 @@ class _HomeScreenState extends State<HomeScreen> {
     _applyMapResult(result);
   }
 
-  Future<void> _openNearbyRoutes() async {
-    final destination = await Navigator.push<Destination>(
-      context,
-      MaterialPageRoute(builder: (context) => const DestinationScreen()),
-    );
-
-    if (!mounted || destination == null) return;
-
-    final result = await Navigator.push<Map<String, dynamic>?>(
-      context,
-      MaterialPageRoute(
-        builder: (context) => MapScreen(
-          sleepMode: sleepMode,
-          sleepInterval: sleepAlarmInterval,
-          initialDestination: destination,
-        ),
-      ),
-    );
-
-    if (!mounted) return;
-    _applyMapResult(result);
-  }
-
   Future<void> _openLiveJourney() async {
     if (!journeyActive) {
       await _startJourneyFlow();
@@ -331,7 +312,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         boxShadow: [
           BoxShadow(
-            color: kPrimaryPurple.withOpacity(0.3),
+            color: kPrimaryPurple.withValues(alpha: 0.3),
             blurRadius: 16,
             offset: const Offset(0, 8),
           ),
@@ -425,11 +406,11 @@ class _HomeScreenState extends State<HomeScreen> {
 
         borderRadius: BorderRadius.circular(20),
 
-        border: Border.all(color: kPrimaryPurple.withOpacity(0.15)),
+        border: Border.all(color: kPrimaryPurple.withValues(alpha: 0.15)),
 
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.04),
+            color: Colors.black.withValues(alpha: 0.04),
             blurRadius: 12,
             offset: const Offset(0, 4),
           ),
@@ -446,7 +427,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 padding: const EdgeInsets.all(10),
 
                 decoration: BoxDecoration(
-                  color: kPrimaryPurple.withOpacity(0.12),
+                  color: kPrimaryPurple.withValues(alpha: 0.12),
 
                   shape: BoxShape.circle,
                 ),
@@ -668,7 +649,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.04),
+                color: Colors.black.withValues(alpha: 0.04),
 
                 blurRadius: 10,
 
@@ -683,7 +664,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 padding: const EdgeInsets.all(10),
 
                 decoration: BoxDecoration(
-                  color: Colors.deepPurple.withOpacity(0.1),
+                  color: Colors.deepPurple.withValues(alpha: 0.1),
 
                   shape: BoxShape.circle,
                 ),
@@ -727,7 +708,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Switch(
                 value: sleepMode,
 
-                activeColor: kPrimaryPurple,
+                activeThumbColor: kPrimaryPurple,
 
                 onChanged: (value) {
                   setState(() {
@@ -753,7 +734,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildQuickActionsGrid() {
     final actions = [
-      {'icon': Icons.directions_bus_outlined, 'label': 'Nearby\nRoutes'},
       {'icon': Icons.bookmark_border, 'label': 'Saved\nStops'},
       {'icon': Icons.map_outlined, 'label': 'Live\nMap'},
       {'icon': Icons.sos, 'label': 'Emergency\nSOS'},
@@ -767,7 +747,7 @@ class _HomeScreenState extends State<HomeScreen> {
       itemCount: actions.length,
 
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 4,
+        crossAxisCount: 3,
 
         mainAxisSpacing: 10,
 
@@ -785,10 +765,6 @@ class _HomeScreenState extends State<HomeScreen> {
           onTap: () async {
             switch (index) {
               case 0:
-                await _openNearbyRoutes();
-                break;
-
-              case 1:
                 await Navigator.push(
                   context,
 
@@ -796,11 +772,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 );
                 break;
 
-              case 2:
+              case 1:
                 await _openLiveJourney();
                 break;
 
-              case 3:
+              case 2:
                 await Navigator.push(
                   context,
 
@@ -816,13 +792,13 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: const EdgeInsets.symmetric(vertical: 14),
 
             decoration: BoxDecoration(
-              color: isSos ? Colors.red.withOpacity(0.08) : kCardWhite,
+              color: isSos ? Colors.red.withValues(alpha: 0.08) : kCardWhite,
 
               borderRadius: BorderRadius.circular(16),
 
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.03),
+                  color: Colors.black.withValues(alpha: 0.03),
 
                   blurRadius: 8,
 
@@ -881,7 +857,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.03),
+            color: Colors.black.withValues(alpha: 0.03),
 
             blurRadius: 8,
 

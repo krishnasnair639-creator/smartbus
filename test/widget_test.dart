@@ -202,12 +202,12 @@ void main() {
 
   test('SOS SMS keeps saved contacts as separate recipients', () {
     final androidUri = buildSosSmsUri(
-      ['+1 (555) 111-2222', '+1 (555) 333-4444'],
+      ['+1 (555) 111-2222', '+1 (555) 333-4444', '112', '+91 100'],
       'SOS location: https://maps.google.com/?q=12,76',
       platform: TargetPlatform.android,
     );
     final iosUri = buildSosSmsUri(
-      ['+1 (555) 111-2222', '+1 (555) 333-4444'],
+      ['+1 (555) 111-2222', '+1 (555) 333-4444', '112', '+91 100'],
       'SOS location',
       platform: TargetPlatform.iOS,
     );
@@ -215,6 +215,17 @@ void main() {
     expect(androidUri.path, '+15551112222;+15553334444');
     expect(iosUri.path, '+15551112222,+15553334444');
     expect(androidUri.queryParameters['body'], contains('12,76'));
+    expect(isEmergencyHelplinePhoneNumber('112'), isTrue);
+    expect(isEmergencyHelplinePhoneNumber('+91 100'), isTrue);
+    expect(isEmergencyHelplinePhoneNumber('9876543210'), isFalse);
+  });
+
+  test('emergency contacts do not seed sample phone numbers', () async {
+    SharedPreferences.setMockInitialValues({});
+
+    final contacts = await EmergencyService.instance.loadContacts(userId: 7);
+
+    expect(contacts, isEmpty);
   });
 
   test('theme mode selection persists across reloads', () async {

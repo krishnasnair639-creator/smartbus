@@ -512,7 +512,7 @@ class _DestinationScreenState extends State<DestinationScreen> {
               onPressed: _selected == null ? null : _confirmSelection,
               style: ElevatedButton.styleFrom(
                 backgroundColor: kPrimaryPurple,
-                disabledBackgroundColor: kPrimaryPurple.withOpacity(0.45),
+                disabledBackgroundColor: kPrimaryPurple.withValues(alpha: 0.45),
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(30),
@@ -708,7 +708,7 @@ class _StartingPointScreenState extends State<StartingPointScreen> {
                   : () => Navigator.pop(context, _selected),
               style: ElevatedButton.styleFrom(
                 backgroundColor: kPrimaryPurple,
-                disabledBackgroundColor: kPrimaryPurple.withOpacity(0.45),
+                disabledBackgroundColor: kPrimaryPurple.withValues(alpha: 0.45),
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(30),
@@ -758,7 +758,7 @@ class DestinationOptionTile extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: Material(
-        color: selected ? kPrimaryPurple.withOpacity(0.12) : kCardWhite,
+        color: selected ? kPrimaryPurple.withValues(alpha: 0.12) : kCardWhite,
         borderRadius: BorderRadius.circular(16),
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
@@ -1057,6 +1057,131 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
     }
   }
 
+  Future<Destination> _resolvePlace(
+    Destination? selected,
+    String query, {
+    required bool isFrom,
+  }) async {
+    if (selected?.hasCoordinates == true) return selected!;
+    if (selected?.name == 'Current Location' && query.trim().isEmpty) {
+      throw const FormatException(
+        'Current location is unavailable. Enter a starting place instead.',
+      );
+    }
+    if (query.trim().length < 3) {
+      throw const FormatException(
+        'Enter a place name with at least 3 letters.',
+      );
+    }
+
+    final uri = Uri.https('nominatim.openstreetmap.org', '/search', {
+      'q': query.trim(),
+      'format': 'jsonv2',
+      'addressdetails': '1',
+      'limit': '1',
+    });
+    final response = await http
+        .get(uri, headers: const {'User-Agent': 'SmartBusGuardian/1.0'})
+        .timeout(const Duration(seconds: 10));
+    if (response.statusCode != 200) {
+      throw const FormatException('Location search is unavailable.');
+    }
+
+    final results = jsonDecode(response.body) as List<dynamic>;
+    if (results.isEmpty) {
+      throw FormatException(
+        'No matching ${isFrom ? 'starting place' : 'destination'} found.',
+      );
+    }
+
+    final place = results.first as Map<String, dynamic>;
+    final latitude = double.tryParse(place['lat'].toString());
+    final longitude = double.tryParse(place['lon'].toString());
+    if (latitude == null || longitude == null) {
+      throw const FormatException('The selected place has no coordinates.');
+    }
+
+    final displayName = place['display_name']?.toString() ?? query.trim();
+    final shortName = place['name']?.toString().trim();
+    return Destination(
+      name: shortName == null || shortName.isEmpty
+          ? displayName.split(',').first.trim()
+          : shortName,
+      subtitle: displayName,
+      icon: isFrom ? Icons.trip_origin : Icons.location_on_outlined,
+      latitude: latitude,
+      longitude: longitude,
+    );
+  }
+
+  Future<void> _showRoute() async {
+    _fromDebounce?.cancel();
+    _toDebounce?.cancel();
+    _fromSearchId++;
+    _toSearchId++;
+
+    setState(() {
+      _searchingFrom = _selectedOrigin?.hasCoordinates != true;
+      _searchingTo = false;
+      _fromError = null;
+      _toError = null;
+    });
+
+    Destination origin;
+    try {
+      origin = await _resolvePlace(
+        _selectedOrigin,
+        _fromController.text,
+        isFrom: true,
+      );
+    } on FormatException catch (error) {
+      if (!mounted) return;
+      setState(() => _fromError = error.message.toString());
+      return;
+    } catch (_) {
+      if (!mounted) return;
+      setState(
+        () => _fromError = 'Could not search locations. Check your connection.',
+      );
+      return;
+    } finally {
+      if (mounted) setState(() => _searchingFrom = false);
+    }
+
+    if (mounted) {
+      setState(() {
+        _searchingTo = _selectedDestination?.hasCoordinates != true;
+      });
+    }
+
+    Destination destination;
+    try {
+      destination = await _resolvePlace(
+        _selectedDestination,
+        _toController.text,
+        isFrom: false,
+      );
+    } on FormatException catch (error) {
+      if (!mounted) return;
+      setState(() => _toError = error.message.toString());
+      return;
+    } catch (_) {
+      if (!mounted) return;
+      setState(
+        () => _toError = 'Could not search locations. Check your connection.',
+      );
+      return;
+    } finally {
+      if (mounted) setState(() => _searchingTo = false);
+    }
+
+    if (!mounted) return;
+    Navigator.pop(
+      context,
+      JourneyPlan(origin: origin, destination: destination),
+    );
+  }
+
   void _selectPlace(Destination place, {required bool isFrom}) {
     FocusScope.of(context).unfocus();
     setState(() {
@@ -1157,7 +1282,10 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
     final origin = _selectedOrigin;
     final destination = _selectedDestination;
     final canShowRoute =
-        origin?.hasCoordinates == true && destination?.hasCoordinates == true;
+        (origin?.hasCoordinates == true ||
+            _fromController.text.trim().length >= 3) &&
+        (destination?.hasCoordinates == true ||
+            _toController.text.trim().length >= 3);
 
     return Scaffold(
       backgroundColor: kBackground,
@@ -1233,12 +1361,7 @@ class _JourneyPlannerScreenState extends State<JourneyPlannerScreen> {
           child: SizedBox(
             width: double.infinity,
             child: ElevatedButton.icon(
-              onPressed: canShowRoute
-                  ? () => Navigator.pop(
-                      context,
-                      JourneyPlan(origin: origin!, destination: destination!),
-                    )
-                  : null,
+              onPressed: canShowRoute ? _showRoute : null,
               icon: const Icon(Icons.alt_route),
               label: const Text('Show Route'),
               style: ElevatedButton.styleFrom(

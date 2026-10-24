@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:vibration/vibration.dart';
@@ -18,7 +19,10 @@ Uri buildSosSmsUri(
 }) {
   final recipients = phoneNumbers
       .map((phone) => phone.replaceAll(RegExp(r'[^0-9+]'), ''))
-      .where((phone) => phone.isNotEmpty)
+      .where(
+        (phone) =>
+            phone.isNotEmpty && !isEmergencyHelplinePhoneNumber(phone),
+      )
       .toList();
   final separator = (platform ?? defaultTargetPlatform) == TargetPlatform.iOS
       ? ','
@@ -26,6 +30,22 @@ Uri buildSosSmsUri(
   return Uri.parse(
     'sms:${recipients.join(separator)}?body=${Uri.encodeComponent(message)}',
   );
+}
+
+bool isEmergencyHelplinePhoneNumber(String phoneNumber) {
+  final digits = phoneNumber.replaceAll(RegExp(r'\D'), '');
+  const helplineNumbers = {'112', '100', '1091', '108', '911', '999', '000'};
+
+  if (helplineNumbers.contains(digits)) return true;
+  if (digits.startsWith('91') &&
+      helplineNumbers.contains(digits.substring(2))) {
+    return true;
+  }
+  if (digits.startsWith('0091') &&
+      helplineNumbers.contains(digits.substring(4))) {
+    return true;
+  }
+  return false;
 }
 
 class EmergencyService {
@@ -111,27 +131,6 @@ class EmergencyService {
       }
     }
 
-    // If user has no custom contacts saved yet, initialize with default trusted contacts
-    if (list.isEmpty) {
-      list = [
-        EmergencyContact(
-          id: 1,
-          userId: userId,
-          name: 'Primary Guardian',
-          phone: '9876543210',
-          relationship: 'Parent',
-        ),
-        EmergencyContact(
-          id: 2,
-          userId: userId,
-          name: 'Emergency Friend',
-          phone: '9123456780',
-          relationship: 'Friend',
-        ),
-      ];
-      await saveContacts(list);
-    }
-
     return list;
   }
 
@@ -144,6 +143,14 @@ class EmergencyService {
   }
 
   Future<void> addContact(EmergencyContact contact) async {
+    if (isEmergencyHelplinePhoneNumber(contact.phone)) {
+      throw ArgumentError.value(
+        contact.phone,
+        'contact.phone',
+        'Government emergency helpline numbers cannot be saved as trusted contacts.',
+      );
+    }
+
     final list = await loadContacts(userId: contact.userId);
     final newId = DateTime.now().millisecondsSinceEpoch % 100000;
     final newContact = EmergencyContact(
@@ -257,29 +264,124 @@ class EmergencyService {
   Future<bool> sendDirectSms({
     required String phoneNumber,
     required String message,
+    String? contactName,
   }) async {
+    if (isEmergencyHelplinePhoneNumber(phoneNumber)) {
+      debugPrint('Blocked SMS to emergency helpline number.');
+      return false;
+    }
+
     final cleanNumber = phoneNumber.replaceAll(RegExp(r'[^0-9+]'), '');
+    if (cleanNumber.isEmpty) return false;
+
+    if (kIsWeb) {
+      return shareMessageToContact(
+        contactName: contactName ?? 'trusted contact',
+        phoneNumber: cleanNumber,
+        message: message,
+      );
+    }
+
     final encodedBody = Uri.encodeComponent(message);
     final uri = Uri.parse('sms:$cleanNumber?body=$encodedBody');
 
     try {
       if (await canLaunchUrl(uri)) {
-        return await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
-        return await launchUrl(uri);
+        final launched = await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (launched) return true;
       }
     } catch (e) {
       debugPrint('Error launching SMS: $e');
-      try {
-        final fallbackUri = Uri(
-          scheme: 'sms',
-          path: cleanNumber,
-          queryParameters: {'body': message},
-        );
-        return await launchUrl(fallbackUri);
-      } catch (_) {
-        return false;
+    }
+
+    return shareMessageToContact(
+      contactName: contactName ?? 'trusted contact',
+      phoneNumber: cleanNumber,
+      message: message,
+    );
+  }
+
+  Future<bool> shareMessageToContact({
+    required String contactName,
+    required String phoneNumber,
+    required String message,
+  }) async {
+    if (isEmergencyHelplinePhoneNumber(phoneNumber)) return false;
+
+    try {
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          subject: 'Emergency message for $contactName',
+          text: 'To: $contactName ($phoneNumber)\n\n$message',
+        ),
+      );
+      return result.status != ShareResultStatus.unavailable;
+    } catch (error) {
+      debugPrint('Error opening emergency message share sheet: $error');
+      return false;
+    }
+  }
+
+  Future<bool> shareMessageWithContacts({
+    required List<EmergencyContact> contacts,
+    required String message,
+  }) async {
+    final eligibleContacts = contacts
+        .where(
+          (contact) =>
+              contact.phone.trim().isNotEmpty &&
+              !isEmergencyHelplinePhoneNumber(contact.phone),
+        )
+        .toList();
+    if (eligibleContacts.isEmpty) return false;
+
+    final recipients = eligibleContacts
+        .map((contact) => '${contact.name} (${contact.phone})')
+        .join(', ');
+    try {
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          subject: 'Emergency message for trusted contacts',
+          text: 'To: $recipients\n\n$message',
+        ),
+      );
+      return result.status != ShareResultStatus.unavailable;
+    } catch (error) {
+      debugPrint('Error opening emergency contacts share sheet: $error');
+      return false;
+    }
+  }
+
+  Future<bool> sendSosViaBackend({
+    required List<EmergencyContact> contacts,
+    required String message,
+  }) async {
+    final phoneNumbers = contacts
+        .map((c) => c.phone.replaceAll(RegExp(r'[^0-9+]'), ''))
+        .where(
+          (p) => p.isNotEmpty && !isEmergencyHelplinePhoneNumber(p),
+        )
+        .toList();
+    if (phoneNumbers.isEmpty) return false;
+
+    try {
+      final result = await ApiService.sendEmergencySms(
+        phoneNumbers: phoneNumbers,
+        message: message,
+      );
+
+      if (result['success'] == true) {
+        return true;
       }
+
+      debugPrint('Backend SMS unavailable: ${result['error'] ?? result['message']}');
+      return false;
+    } catch (error) {
+      debugPrint('Error sending SOS through backend: $error');
+      return false;
     }
   }
 
@@ -289,25 +391,31 @@ class EmergencyService {
   }) async {
     final phoneNumbers = contacts
         .map((c) => c.phone.replaceAll(RegExp(r'[^0-9+]'), ''))
-        .where((p) => p.isNotEmpty)
+        .where(
+          (p) => p.isNotEmpty && !isEmergencyHelplinePhoneNumber(p),
+        )
         .toList();
     if (phoneNumbers.isEmpty) return false;
+
+    if (kIsWeb) {
+      return shareMessageWithContacts(contacts: contacts, message: message);
+    }
 
     final uri = buildSosSmsUri(phoneNumbers, message);
 
     try {
       if (await canLaunchUrl(uri)) {
-        return await launchUrl(uri, mode: LaunchMode.externalApplication);
+        final launched = await launchUrl(
+          uri,
+          mode: LaunchMode.externalApplication,
+        );
+        if (launched) return true;
       }
-      return await launchUrl(uri);
     } catch (error) {
       debugPrint('Error launching SOS SMS composer: $error');
-      try {
-        return await launchUrl(uri);
-      } catch (_) {
-        return false;
-      }
     }
+
+    return shareMessageWithContacts(contacts: contacts, message: message);
   }
 
   // ============================================================

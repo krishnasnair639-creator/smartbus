@@ -464,7 +464,11 @@ class _SosScreenState extends State<SosScreen>
 
     var contactDeliveryMessage = 'SOS is active.';
     final trustedContacts = _contacts
-        .where((contact) => contact.phone.trim().isNotEmpty)
+        .where(
+          (contact) =>
+              contact.phone.trim().isNotEmpty &&
+              !isEmergencyHelplinePhoneNumber(contact.phone),
+        )
         .toList();
 
     if (freshPosition == null) {
@@ -472,20 +476,31 @@ class _SosScreenState extends State<SosScreen>
           'SOS is active, but GPS was unavailable, so no location message was prepared.';
     } else if (trustedContacts.isEmpty) {
       contactDeliveryMessage =
-          'SOS is active, but no saved trusted contacts are available.';
+          'SOS is active, but there are no eligible trusted contacts. Emergency helplines are excluded from SMS.';
     } else {
       final message = _emergencyService.composeSosMessage(
         lat: record.latitude,
         lng: record.longitude,
         userName: passengerName,
       );
-      final composerOpened = await _emergencyService.shareSosToAllContacts(
+
+      final backendSent = await _emergencyService.sendSosViaBackend(
         contacts: trustedContacts,
         message: message,
       );
-      contactDeliveryMessage = composerOpened
-          ? 'A location SMS draft for ${trustedContacts.length} trusted contact(s) is ready. Tap Send in your Messages app.'
-          : 'SOS is active, but the Messages app could not be opened. Use Send Emergency SMS below.';
+
+      if (backendSent) {
+        contactDeliveryMessage =
+            'SOS SMS was sent through the backend to ${trustedContacts.length} trusted contact(s).';
+      } else {
+        final composerOpened = await _emergencyService.shareSosToAllContacts(
+          contacts: trustedContacts,
+          message: message,
+        );
+        contactDeliveryMessage = composerOpened
+            ? 'The emergency message is ready for ${trustedContacts.length} trusted contact(s). Review recipients and send it in the opened app.'
+            : 'SOS is active, but no messaging or sharing app could be opened. Use Send Emergency SMS below.';
+      }
     }
 
     if (!mounted) return;
@@ -838,6 +853,17 @@ class _SosScreenState extends State<SosScreen>
                           );
                           return;
                         }
+                        if (isEmergencyHelplinePhoneNumber(phone)) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text(
+                                'Emergency helpline numbers cannot be saved as trusted contacts.',
+                              ),
+                              backgroundColor: Colors.redAccent,
+                            ),
+                          );
+                          return;
+                        }
 
                         Navigator.pop(modalCtx);
 
@@ -913,14 +939,89 @@ class _SosScreenState extends State<SosScreen>
     }
   }
 
-  void _sendSmsToContact(EmergencyContact contact) {
-    final double lat = _currentPosition?.latitude ?? 13.0827;
-    final double lng = _currentPosition?.longitude ?? 80.2707;
-    final msg = _emergencyService.composeSosMessage(lat: lat, lng: lng);
-    _emergencyService.sendDirectSms(phoneNumber: contact.phone, message: msg);
+  Future<void> _sendSmsToContact(EmergencyContact contact) async {
+    if (isEmergencyHelplinePhoneNumber(contact.phone)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('SMS to emergency helpline numbers is disabled.'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    final position = await _emergencyService.getCurrentLocation();
+    if (!mounted) return;
+
+    final message = position == null
+        ? 'Emergency alert from SmartBus Guardian. I need assistance. My current location is unavailable.'
+        : _emergencyService.composeSosMessage(
+            lat: position.latitude,
+            lng: position.longitude,
+          );
+    final opened = await _emergencyService.sendDirectSms(
+      phoneNumber: contact.phone,
+      contactName: contact.name,
+      message: message,
+    );
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          opened
+              ? 'Emergency message prepared for ${contact.name}. Review and send it in the opened app.'
+              : 'Could not open a messaging or sharing app.',
+        ),
+      ),
+    );
   }
 
-  void _broadcastSmsToAllContacts() {
+  Future<void> _shareLocationToContact(EmergencyContact contact) async {
+    if (isEmergencyHelplinePhoneNumber(contact.phone)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sharing to emergency helpline numbers is disabled.'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+      return;
+    }
+
+    final position = await _emergencyService.getCurrentLocation();
+    if (!mounted) return;
+    if (position == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Current location is unavailable. Turn on GPS and retry.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _currentPosition = position);
+    final locationMessage =
+        'My current location: ${_emergencyService.buildMapsUrl(position.latitude, position.longitude)}\n'
+        'Coordinates: ${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)}';
+    final opened = await _emergencyService.sendDirectSms(
+      phoneNumber: contact.phone,
+      contactName: contact.name,
+      message: locationMessage,
+    );
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          opened
+              ? 'Location message prepared for ${contact.name}. Review and send it in the opened app.'
+              : 'Could not open a messaging or sharing app.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _broadcastSmsToAllContacts() async {
     if (_contacts.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -931,10 +1032,37 @@ class _SosScreenState extends State<SosScreen>
       return;
     }
 
-    final double lat = _currentPosition?.latitude ?? 13.0827;
-    final double lng = _currentPosition?.longitude ?? 80.2707;
-    final msg = _emergencyService.composeSosMessage(lat: lat, lng: lng);
-    _emergencyService.shareSosToAllContacts(contacts: _contacts, message: msg);
+    final position = await _emergencyService.getCurrentLocation();
+    if (!mounted) return;
+    if (position == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Current location is unavailable. Turn on GPS and retry.'),
+        ),
+      );
+      return;
+    }
+
+    setState(() => _currentPosition = position);
+    final message = _emergencyService.composeSosMessage(
+      lat: position.latitude,
+      lng: position.longitude,
+    );
+    final opened = await _emergencyService.shareSosToAllContacts(
+      contacts: _contacts,
+      message: message,
+    );
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          opened
+              ? 'Emergency message prepared. Review recipients and send it in the opened app.'
+              : 'Could not open a messaging or sharing app.',
+        ),
+      ),
+    );
   }
 
   // ============================================================
@@ -1756,6 +1884,14 @@ class _SosScreenState extends State<SosScreen>
                       icon: const Icon(Icons.sms, color: kPrimaryPurple),
                       tooltip: 'Send Emergency SMS',
                       onPressed: () => _sendSmsToContact(contact),
+                    ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.location_on_outlined,
+                        color: Colors.blue,
+                      ),
+                      tooltip: 'Share current location',
+                      onPressed: () => _shareLocationToContact(contact),
                     ),
                     IconButton(
                       icon: const Icon(

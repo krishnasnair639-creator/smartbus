@@ -175,9 +175,6 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _initializeMap() async {
-    await getCurrentLocation();
-    if (!mounted) return;
-
     final startingPoint = widget.startingPoint;
     if (startingPoint != null) {
       originLabel = startingPoint.name;
@@ -187,9 +184,7 @@ class _MapScreenState extends State<MapScreen> {
     }
 
     final destination = widget.initialDestination;
-    if (destination == null) return;
-
-    if (destination.hasCoordinates) {
+    if (destination != null && destination.hasCoordinates) {
       setState(() {
         selectedLocation = LatLng(
           destination.latitude!,
@@ -198,10 +193,16 @@ class _MapScreenState extends State<MapScreen> {
         destinationLabel = destination.name;
         destinationAddress = destination.subtitle;
       });
-      await getRoute(force: true);
-    } else {
+    }
+
+    unawaited(getCurrentLocation());
+    if (!mounted || destination == null) return;
+
+    if (!destination.hasCoordinates) {
       searchController.text = destination.name;
       await searchDestination();
+    } else {
+      await getRoute(force: true);
     }
   }
 
@@ -252,6 +253,10 @@ class _MapScreenState extends State<MapScreen> {
         currentPosition = position;
         errorMessage = null;
       });
+
+      if (selectedLocation != null && routeOrigin == null && !isTracking) {
+        unawaited(getRoute(force: true));
+      }
 
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
@@ -361,10 +366,7 @@ class _MapScreenState extends State<MapScreen> {
       // Move to the searched place.
       mapController.move(destination, 14);
 
-      // Create road route only when current GPS is available.
-      if (currentPosition != null) {
-        await getRoute(force: true);
-      }
+      await getRoute(force: true);
     } catch (e) {
       if (!mounted) return;
 
@@ -391,7 +393,16 @@ class _MapScreenState extends State<MapScreen> {
 
     final LatLng? destination = selectedLocation;
 
-    if (position == null || destination == null) {
+    final LatLng? start = isTracking
+        ? position == null
+              ? null
+              : LatLng(position.latitude, position.longitude)
+        : routeOrigin ??
+              (position == null
+                  ? null
+                  : LatLng(position.latitude, position.longitude));
+
+    if (start == null || destination == null) {
       return;
     }
 
@@ -411,10 +422,6 @@ class _MapScreenState extends State<MapScreen> {
     });
 
     try {
-      final LatLng start = isTracking || routeOrigin == null
-          ? LatLng(position.latitude, position.longitude)
-          : routeOrigin!;
-
       final double startLongitude = start.longitude;
       final double startLatitude = start.latitude;
 
@@ -490,19 +497,18 @@ class _MapScreenState extends State<MapScreen> {
         routeDurationSeconds = duration;
 
         routePoints = points;
+        remainingDistanceMeters = isTracking && currentPosition != null
+            ? estimateRemainingRoadDistanceMeters(
+                currentLocation: LatLng(
+                  currentPosition!.latitude,
+                  currentPosition!.longitude,
+                ),
+                routePoints: points,
+                totalRoadDistanceMeters: distance,
+              )
+            : distance;
 
         _lastRouteUpdate = DateTime.now();
-
-        if (isTracking && currentPosition != null) {
-          remainingDistanceMeters = estimateRemainingRoadDistanceMeters(
-            currentLocation: LatLng(
-              currentPosition!.latitude,
-              currentPosition!.longitude,
-            ),
-            routePoints: points,
-            totalRoadDistanceMeters: distance,
-          );
-        }
       });
 
       // Fit the initial route; while tracking, keep the camera following GPS.
@@ -974,11 +980,8 @@ class _MapScreenState extends State<MapScreen> {
   // ============================================================
 
   Future<void> finishJourney({bool completed = true}) async {
-    final double? distanceInKm = routeDistanceMeters != null
-        ? routeDistanceMeters! / 1000
-        : (remainingDistanceMeters != null
-              ? remainingDistanceMeters! / 1000
-              : 5.0);
+    final double distanceInKm =
+        (routeDistanceMeters ?? remainingDistanceMeters ?? 5.0) / 1000;
 
     await JourneyService.instance.endJourney(
       completed: completed,
@@ -1233,7 +1236,26 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Widget _buildTrackingNotices() {
-    final showNearbyStops = isTracking && reachedBusStop != null;
+    final position = currentPosition;
+    final stopsByDistance =
+        position == null
+              ? <MapEntry<Destination, double>>[]
+              : nearbyBusStops
+                    .where((stop) => stop.hasCoordinates)
+                    .map(
+                      (stop) => MapEntry(
+                        stop,
+                        Geolocator.distanceBetween(
+                          position.latitude,
+                          position.longitude,
+                          stop.latitude!,
+                          stop.longitude!,
+                        ),
+                      ),
+                    )
+                    .toList()
+          ..sort((first, second) => first.value.compareTo(second.value));
+    final showNearbyStops = isTracking && stopsByDistance.isNotEmpty;
     if (routeStatusMessage == null && !showNearbyStops) {
       return const SizedBox.shrink();
     }
@@ -1320,7 +1342,9 @@ class _MapScreenState extends State<MapScreen> {
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'Near ${reachedBusStop!.name} · Nearby Bus Stops',
+                          reachedBusStop == null
+                              ? 'Nearby Bus Stops on Your Route'
+                              : 'You are near ${reachedBusStop!.name}',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -1332,22 +1356,23 @@ class _MapScreenState extends State<MapScreen> {
                     ],
                   ),
                   const SizedBox(height: 6),
-                  ...nearbyBusStops
-                      .take(3)
-                      .map(
-                        (stop) => Padding(
-                          padding: const EdgeInsets.only(top: 3, left: 27),
-                          child: Text(
-                            '${stop.name} · ${stop.subtitle}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: AppThemeService.instance.secondaryText,
-                            ),
-                          ),
+                  ...stopsByDistance.take(3).map((entry) {
+                    final stop = entry.key;
+                    final distance = entry.value;
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 3, left: 27),
+                      child: Text(
+                        '${stop.name} · ${formatDistance(distance)} away'
+                        '${stop.subtitle.isEmpty ? '' : ' · ${stop.subtitle}'}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: AppThemeService.instance.secondaryText,
                         ),
                       ),
+                    );
+                  }),
                 ],
               ),
             ),
@@ -1361,17 +1386,21 @@ class _MapScreenState extends State<MapScreen> {
   // ============================================================
 
   Widget _buildMap() {
-    // This function is only called when
-    // currentPosition is available.
-    final LatLng currentLocation = LatLng(
-      currentPosition!.latitude,
-      currentPosition!.longitude,
-    );
+    final LatLng? currentLocation = currentPosition == null
+        ? null
+        : LatLng(currentPosition!.latitude, currentPosition!.longitude);
 
     return FlutterMap(
       mapController: mapController,
 
-      options: MapOptions(initialCenter: currentLocation, initialZoom: 15),
+      options: MapOptions(
+        initialCenter:
+            currentLocation ??
+            routeOrigin ??
+            selectedLocation ??
+            const LatLng(0, 0),
+        initialZoom: 15,
+      ),
 
       children: [
         // ========================================================
@@ -1386,16 +1415,12 @@ class _MapScreenState extends State<MapScreen> {
         ),
 
         // ========================================================
-        // OSRM ROAD ROUTE
+        // ROAD ROUTE FROM THE CURRENT ROUTING ORIGIN TO DESTINATION
         // ========================================================
         if (routePoints.length >= 2)
           PolylineLayer(
             polylines: [
-              Polyline(
-                points: routePoints,
-                strokeWidth: 6,
-                color: kPrimaryPurple,
-              ),
+              Polyline(points: routePoints, strokeWidth: 5, color: Colors.blue),
             ],
           ),
 
@@ -1405,16 +1430,29 @@ class _MapScreenState extends State<MapScreen> {
         MarkerLayer(
           markers: [
             // Current location marker.
-            Marker(
-              point: currentLocation,
-              width: 45,
-              height: 45,
-              child: const Icon(
-                Icons.my_location,
-                color: Colors.blue,
-                size: 35,
+            if (currentLocation != null)
+              Marker(
+                point: currentLocation,
+                width: 45,
+                height: 45,
+                child: const Icon(
+                  Icons.my_location,
+                  color: Colors.blue,
+                  size: 35,
+                ),
               ),
-            ),
+
+            if (!isTracking && routeOrigin != null)
+              Marker(
+                point: routeOrigin!,
+                width: 45,
+                height: 45,
+                child: const Icon(
+                  Icons.trip_origin,
+                  color: Colors.green,
+                  size: 32,
+                ),
+              ),
 
             // Destination marker.
             // Only exists after the user searches.
@@ -1522,12 +1560,13 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
-        await _exitAndReport();
-        return false;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (bool didPop, Object? result) async {
+        if (!didPop) {
+          await _exitAndReport();
+        }
       },
-
       child: Scaffold(
         backgroundColor: kBackground,
 
@@ -1587,7 +1626,10 @@ class _MapScreenState extends State<MapScreen> {
           ],
         ),
 
-        body: currentPosition == null
+        body:
+            currentPosition == null &&
+                routeOrigin == null &&
+                selectedLocation == null
             ? const Center(child: CircularProgressIndicator())
             : Stack(
                 children: [
