@@ -20,6 +20,8 @@ Color get kBackground => AppThemeService.instance.pageBackground;
 const double kAlertThresholdMeters = 100;
 const double kBusStopArrivalRadiusMeters = 100;
 const double kRouteDeviationThresholdMeters = 150;
+const double kMissedStopDistanceMeters = 200;
+const int kMissedStopIncreasingFixes = 3;
 
 bool isWithinDestinationAlertThreshold(double distanceMeters) =>
     distanceMeters <= kAlertThresholdMeters;
@@ -29,6 +31,15 @@ bool isWithinBusStopArrivalRadius(double distanceMeters) =>
 
 bool isOutsideRouteDeviationThreshold(double distanceMeters) =>
     distanceMeters > kRouteDeviationThresholdMeters;
+
+bool isMissedStopConfirmed({
+  required bool destinationAlertFired,
+  required double distanceMeters,
+  required int increasingDistanceFixes,
+}) =>
+    destinationAlertFired &&
+    distanceMeters >= kMissedStopDistanceMeters &&
+    increasingDistanceFixes >= kMissedStopIncreasingFixes;
 
 double distanceToRouteMeters({
   required LatLng currentLocation,
@@ -155,6 +166,9 @@ class _MapScreenState extends State<MapScreen> {
   bool isRouting = false;
   bool isReplanning = false;
   bool alertFired = false;
+  bool _missedStopDetected = false;
+  double? _lastDestinationDistanceMeters;
+  int _increasingDestinationDistanceFixes = 0;
   int _consecutiveRouteDeviationFixes = 0;
 
   String? errorMessage;
@@ -355,7 +369,9 @@ class _MapScreenState extends State<MapScreen> {
         remainingDistanceMeters = null;
 
         alertFired = false;
-
+        _missedStopDetected = false;
+        _lastDestinationDistanceMeters = null;
+        _increasingDestinationDistanceFixes = 0;
         routeStatusMessage = null;
 
         _consecutiveRouteDeviationFixes = 0;
@@ -674,6 +690,16 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
 
+    final user = await AuthService.instance.getCurrentUser();
+    final rawUserId = user?['id'];
+    final uid = rawUserId is int
+        ? rawUserId
+        : int.tryParse(rawUserId?.toString() ?? '');
+    if (uid == null) {
+      _showMessage('Log in to save and track this journey.');
+      return;
+    }
+
     await _positionStream?.cancel();
 
     setState(() {
@@ -681,6 +707,9 @@ class _MapScreenState extends State<MapScreen> {
       _lastRouteUpdate = null;
       _lastDeviationRecalculation = null;
       _consecutiveRouteDeviationFixes = 0;
+      _missedStopDetected = false;
+      _lastDestinationDistanceMeters = null;
+      _increasingDestinationDistanceFixes = 0;
       routeStatusMessage = null;
       remainingDistanceMeters = Geolocator.distanceBetween(
         currentPosition!.latitude,
@@ -718,6 +747,23 @@ class _MapScreenState extends State<MapScreen> {
               selectedLocation!.latitude,
               selectedLocation!.longitude,
             );
+            final previousDestinationDistance = _lastDestinationDistanceMeters;
+            if (alertFired &&
+                previousDestinationDistance != null &&
+                distance > previousDestinationDistance + 15) {
+              _increasingDestinationDistanceFixes++;
+            } else {
+              _increasingDestinationDistanceFixes = 0;
+            }
+            _lastDestinationDistanceMeters = distance;
+            if (!_missedStopDetected &&
+                isMissedStopConfirmed(
+                  destinationAlertFired: alertFired,
+                  distanceMeters: distance,
+                  increasingDistanceFixes: _increasingDestinationDistanceFixes,
+                )) {
+              _handleMissedStop(distance);
+            }
 
             final routeDistance = routeDistanceMeters;
             final route = routePoints;
@@ -761,13 +807,6 @@ class _MapScreenState extends State<MapScreen> {
 
     // Persist started journey in JourneyService
     try {
-      final user = await AuthService.instance.getCurrentUser();
-      final int uid = user != null && user['id'] != null
-          ? (user['id'] is int
-                ? user['id'] as int
-                : int.tryParse(user['id'].toString()) ?? 1)
-          : 1;
-
       final double? distanceInKm = routeDistanceMeters != null
           ? routeDistanceMeters! / 1000
           : (remainingDistanceMeters != null
@@ -785,11 +824,60 @@ class _MapScreenState extends State<MapScreen> {
         destLongitude: selectedLocation?.longitude,
         estimatedDistanceKm: distanceInKm,
         sleepModeEnabled: widget.sleepMode,
+        syncWithBackend: user?['backend_synced'] == true,
       );
     } catch (e) {
       debugPrint('Error starting journey record: $e');
     }
   }
+
+  void _handleMissedStop(double distanceMeters) {
+    _missedStopDetected = true;
+    final position = currentPosition;
+    Destination? nearestStop;
+    var nearestStopDistance = double.infinity;
+    if (position != null) {
+      for (final stop in nearbyBusStops) {
+        final distance = Geolocator.distanceBetween(
+          position.latitude,
+          position.longitude,
+          stop.latitude!,
+          stop.longitude!,
+        );
+        if (distance < nearestStopDistance) {
+          nearestStop = stop;
+          nearestStopDistance = distance;
+        }
+      }
+    }
+
+    final message = nearestStop == null
+        ? 'You may have passed $destinationLabel. Find a nearby stop and ask for return directions.'
+        : 'You may have passed $destinationLabel. Nearest return stop: ${nearestStop.name} (${formatDistance(nearestStopDistance)} away).';
+    setState(() {
+      routeStatusMessage = message;
+    });
+    unawaited(
+      AlertService.instance.fireMissedStopAlert(
+        destinationName: destinationLabel ?? 'your destination',
+        nearestStopName: nearestStop?.name,
+        distanceMeters: distanceMeters,
+        journeyId:
+            JourneyService.instance.activeJourneyNotifier.value?.backendId,
+      ),
+    );
+    if (position != null && nearestStop != null) {
+      unawaited(
+        JourneyService.instance.recordMissedStop(
+          latitude: position.latitude,
+          longitude: position.longitude,
+          nearestReturnStop: nearestStop.name,
+        ),
+      );
+    }
+    unawaited(_recalculateAlternativeRoute());
+  }
+
   // ============================================================
   // STOP TRACKING
   // ============================================================
@@ -824,11 +912,17 @@ class _MapScreenState extends State<MapScreen> {
       AlertService.instance.startSleepAlarm(
         destinationName: name,
         interval: widget.sleepInterval,
+        journeyId:
+            JourneyService.instance.activeJourneyNotifier.value?.backendId,
       );
     } else {
-      AlertService.instance.fireDestinationAlert(
-        destinationName: name,
-        distanceMeters: distance,
+      unawaited(
+        AlertService.instance.fireDestinationAlert(
+          destinationName: name,
+          distanceMeters: distance,
+          journeyId:
+              JourneyService.instance.activeJourneyNotifier.value?.backendId,
+        ),
       );
     }
 
@@ -909,6 +1003,9 @@ class _MapScreenState extends State<MapScreen> {
       remainingDistanceMeters = null;
 
       alertFired = false;
+      _missedStopDetected = false;
+      _lastDestinationDistanceMeters = null;
+      _increasingDestinationDistanceFixes = 0;
 
       routeStatusMessage = null;
 
@@ -980,12 +1077,13 @@ class _MapScreenState extends State<MapScreen> {
   // ============================================================
 
   Future<void> finishJourney({bool completed = true}) async {
-    final double distanceInKm =
-        (routeDistanceMeters ?? remainingDistanceMeters ?? 5.0) / 1000;
+    final distanceInMeters = routeDistanceMeters ?? remainingDistanceMeters;
 
     await JourneyService.instance.endJourney(
       completed: completed,
-      finalDistanceKm: distanceInKm,
+      finalDistanceKm: distanceInMeters == null
+          ? null
+          : distanceInMeters / 1000,
     );
 
     await _positionStream?.cancel();
@@ -1610,7 +1708,15 @@ class _MapScreenState extends State<MapScreen> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (_) => const SosScreen()),
+                  MaterialPageRoute(
+                    builder: (_) => SosScreen(
+                      journeyId: JourneyService
+                          .instance
+                          .activeJourneyNotifier
+                          .value
+                          ?.backendId,
+                    ),
+                  ),
                 );
               },
             ),

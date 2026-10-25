@@ -72,6 +72,52 @@ class ApiService {
     }
   }
 
+  static Future<Map<String, dynamic>> updateProfile({
+    required int userId,
+    required String fullName,
+    required String email,
+    required String phoneNumber,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/profile/$userId'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'full_name': fullName,
+              'email': email,
+              'phone_number': phoneNumber,
+            }),
+          )
+          .timeout(_timeout);
+      return jsonDecode(response.body);
+    } catch (error) {
+      return {'success': false, 'error': 'Cannot connect to server: $error'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> changePassword({
+    required int userId,
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/profile/$userId/password'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'current_password': currentPassword,
+              'new_password': newPassword,
+            }),
+          )
+          .timeout(_timeout);
+      return jsonDecode(response.body);
+    } catch (error) {
+      return {'success': false, 'error': 'Cannot connect to server: $error'};
+    }
+  }
+
   // Start journey
   static Future<Map<String, dynamic>> startJourney({
     required int userId,
@@ -100,6 +146,186 @@ class ApiService {
       return jsonDecode(response.body);
     } catch (e) {
       return {'success': false, 'error': 'Cannot connect to server: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> finishJourney({
+    required int journeyId,
+    required int userId,
+    required double distanceTravelledKm,
+    required String status,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/journey/$journeyId/finish'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'user_id': userId,
+              'distance_travelled': distanceTravelledKm,
+              'status': status,
+            }),
+          )
+          .timeout(_timeout);
+      return jsonDecode(response.body);
+    } catch (error) {
+      return {'success': false, 'error': 'Cannot connect to server: $error'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> recordMissedStop({
+    required int journeyId,
+    required double latitude,
+    required double longitude,
+    required String nearestReturnStop,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/missed-stop'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'journey_id': journeyId,
+              'missed_latitude': latitude,
+              'missed_longitude': longitude,
+              'nearest_return_stop': nearestReturnStop,
+            }),
+          )
+          .timeout(_timeout);
+      return jsonDecode(response.body);
+    } catch (error) {
+      return {'success': false, 'error': 'Cannot connect to server: $error'};
+    }
+  }
+
+  static Future<bool> recordJourneyAlert({
+    required int journeyId,
+    required String alertType,
+    required double distanceRemainingMeters,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/alerts'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'journey_id': journeyId,
+              'alert_type': alertType,
+              'distance_remaining': distanceRemainingMeters,
+            }),
+          )
+          .timeout(_timeout);
+      final decoded = jsonDecode(response.body);
+      return response.statusCode == 201 &&
+          decoded is Map<String, dynamic> &&
+          decoded['success'] == true;
+    } catch (error) {
+      debugPrint('Journey alert was not synced: $error');
+      return false;
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> getSavedDestinations(
+    int userId,
+  ) async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/saved-destinations/$userId'))
+          .timeout(_timeout);
+      if (response.statusCode != 200) {
+        throw StateError('Saved destinations request failed: ${response.body}');
+      }
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return List<Map<String, dynamic>>.from(data['destinations'] as List);
+    } catch (error) {
+      debugPrint('Unable to fetch saved destinations: $error');
+      return [];
+    }
+  }
+
+  static Future<Map<String, dynamic>> addSavedDestination({
+    required int userId,
+    required String name,
+    required double latitude,
+    required double longitude,
+  }) async {
+    try {
+      final response = await http
+          .post(
+            Uri.parse('$baseUrl/api/saved-destinations'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'user_id': userId,
+              'destination_name': name,
+              'latitude': latitude,
+              'longitude': longitude,
+            }),
+          )
+          .timeout(_timeout);
+      return jsonDecode(response.body);
+    } catch (error) {
+      return {'success': false, 'error': 'Cannot connect to server: $error'};
+    }
+  }
+
+  static Future<bool> deleteSavedDestination(int destinationId) async {
+    try {
+      final response = await http
+          .delete(
+            Uri.parse('$baseUrl/api/saved-destinations/$destinationId'),
+          )
+          .timeout(_timeout);
+      return response.statusCode == 200 || response.statusCode == 404;
+    } catch (error) {
+      debugPrint('Saved destination deletion failed: $error');
+      return false;
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> getJourneyHistory(
+    int userId,
+  ) async {
+    try {
+      final response = await http
+          .get(Uri.parse('$baseUrl/api/journey/history/$userId'))
+          .timeout(_timeout);
+      if (response.statusCode != 200) {
+        throw StateError('Journey history request failed: ${response.body}');
+      }
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      return List<Map<String, dynamic>>.from(data['journeys'] as List);
+    } catch (error) {
+      debugPrint('Unable to fetch backend journey history: $error');
+      return [];
+    }
+  }
+
+  static Future<bool> deleteJourneyHistory({
+    required int userId,
+    required int journeyId,
+  }) async {
+    try {
+      final response = await http
+          .delete(
+            Uri.parse('$baseUrl/api/journey/history/$userId/$journeyId'),
+          )
+          .timeout(_timeout);
+      return response.statusCode == 200 || response.statusCode == 404;
+    } catch (error) {
+      debugPrint('Journey history deletion failed: $error');
+      return false;
+    }
+  }
+
+  static Future<bool> clearJourneyHistory(int userId) async {
+    try {
+      final response = await http
+          .delete(Uri.parse('$baseUrl/api/journey/history/$userId'))
+          .timeout(_timeout);
+      return response.statusCode == 200;
+    } catch (error) {
+      debugPrint('Journey history clearing failed: $error');
+      return false;
     }
   }
 
