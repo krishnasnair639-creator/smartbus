@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'api_service.dart';
 
@@ -14,6 +15,24 @@ class AuthService {
   static const _storageKey = 'smartbus_registered_users_v2';
   static const _sessionKey = 'smartbus_current_user_session_v2';
   static const _passwordIterations = 10000;
+  static const _secureStorage = FlutterSecureStorage();
+  
+  static const _jwtKey = 'smartbus_jwt_token';
+
+  Future<void> _saveJwt(String token) async {
+    await _secureStorage.write(key: _jwtKey, value: token);
+    ApiService.setJwtToken(token);
+  }
+
+  Future<void> _clearJwt() async {
+    await _secureStorage.delete(key: _jwtKey);
+    ApiService.setJwtToken(null);
+  }
+
+  Future<void> _loadJwt() async {
+    final token = await _secureStorage.read(key: _jwtKey);
+    ApiService.setJwtToken(token);
+  }
 
   Future<Map<String, dynamic>> _loadUsers() async {
     final preferences = await SharedPreferences.getInstance();
@@ -91,6 +110,7 @@ class AuthService {
   }
 
   Future<Map<String, dynamic>?> getCurrentUser() async {
+    await _loadJwt();
     final preferences = await SharedPreferences.getInstance();
     final raw = preferences.getString(_sessionKey);
     if (raw == null || raw.isEmpty) return null;
@@ -170,6 +190,9 @@ class AuthService {
       passwordHash: password.trim(),
     ).then((result) async {
       if (result['success'] == true && result['user_id'] != null) {
+        if (result['access_token'] != null) {
+          await _saveJwt(result['access_token']);
+        }
         user['id'] = result['user_id'];
         user['backend_synced'] = true;
         final latestUsers = await _loadUsers();
@@ -221,6 +244,9 @@ class AuthService {
         passwordHash: normalizedPassword,
       );
       if (apiResult['success'] == true && apiResult['user'] is Map) {
+        if (apiResult['access_token'] != null) {
+          await _saveJwt(apiResult['access_token']);
+        }
         final backendUser = Map<String, dynamic>.from(apiResult['user'] as Map);
         final username = _usernameFrom(backendUser) ?? identifier.trim();
         matchedUser = {
@@ -350,5 +376,6 @@ class AuthService {
   Future<void> logout() async {
     final preferences = await SharedPreferences.getInstance();
     await preferences.remove(_sessionKey);
+    await _clearJwt();
   }
 }

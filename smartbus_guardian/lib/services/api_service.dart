@@ -9,6 +9,20 @@ class ApiService {
       : _deviceBaseUrl;
   static const Duration _timeout = Duration(seconds: 4);
 
+  static String? _jwtToken;
+
+  static void setJwtToken(String? token) {
+    _jwtToken = token;
+  }
+
+  static Map<String, String> get _headers {
+    final headers = {'Content-Type': 'application/json'};
+    if (_jwtToken != null) {
+      headers['Authorization'] = 'Bearer $_jwtToken';
+    }
+    return headers;
+  }
+
   // Test backend connection
   static Future<bool> testConnection() async {
     try {
@@ -33,7 +47,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/register'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'full_name': fullName,
               'email': email,
@@ -58,7 +72,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/login'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'identifier': email,
               'password_hash': passwordHash,
@@ -82,7 +96,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/profile/$userId'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'full_name': fullName,
               'email': email,
@@ -105,7 +119,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/profile/$userId/password'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'current_password': currentPassword,
               'new_password': newPassword,
@@ -131,7 +145,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/journey/start'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'user_id': userId,
               'source_location': sourceLocation,
@@ -159,7 +173,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/journey/$journeyId/finish'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'user_id': userId,
               'distance_travelled': distanceTravelledKm,
@@ -183,7 +197,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/missed-stop'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'journey_id': journeyId,
               'missed_latitude': latitude,
@@ -207,7 +221,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/alerts'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'journey_id': journeyId,
               'alert_type': alertType,
@@ -230,7 +244,7 @@ class ApiService {
   ) async {
     try {
       final response = await http
-          .get(Uri.parse('$baseUrl/api/saved-destinations/$userId'))
+          .get(Uri.parse('$baseUrl/api/saved-destinations/$userId'), headers: _headers)
           .timeout(_timeout);
       if (response.statusCode != 200) {
         throw StateError('Saved destinations request failed: ${response.body}');
@@ -253,7 +267,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/saved-destinations'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'user_id': userId,
               'destination_name': name,
@@ -273,6 +287,7 @@ class ApiService {
       final response = await http
           .delete(
             Uri.parse('$baseUrl/api/saved-destinations/$destinationId'),
+            headers: _headers,
           )
           .timeout(_timeout);
       return response.statusCode == 200 || response.statusCode == 404;
@@ -287,7 +302,7 @@ class ApiService {
   ) async {
     try {
       final response = await http
-          .get(Uri.parse('$baseUrl/api/journey/history/$userId'))
+          .get(Uri.parse('$baseUrl/api/journey/history/$userId'), headers: _headers)
           .timeout(_timeout);
       if (response.statusCode != 200) {
         throw StateError('Journey history request failed: ${response.body}');
@@ -308,6 +323,7 @@ class ApiService {
       final response = await http
           .delete(
             Uri.parse('$baseUrl/api/journey/history/$userId/$journeyId'),
+            headers: _headers,
           )
           .timeout(_timeout);
       return response.statusCode == 200 || response.statusCode == 404;
@@ -320,7 +336,7 @@ class ApiService {
   static Future<bool> clearJourneyHistory(int userId) async {
     try {
       final response = await http
-          .delete(Uri.parse('$baseUrl/api/journey/history/$userId'))
+          .delete(Uri.parse('$baseUrl/api/journey/history/$userId'), headers: _headers)
           .timeout(_timeout);
       return response.statusCode == 200;
     } catch (error) {
@@ -340,7 +356,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/sos'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'user_id': userId,
               'journey_id': journeyId,
@@ -360,7 +376,7 @@ class ApiService {
   static Future<List<Map<String, dynamic>>> getEmergencyContacts(int userId) async {
     try {
       final response = await http
-          .get(Uri.parse('$baseUrl/api/contacts/$userId'))
+          .get(Uri.parse('$baseUrl/api/contacts/$userId'), headers: _headers)
           .timeout(_timeout);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -385,7 +401,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/contacts'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'user_id': userId,
               'contact_name': name,
@@ -405,7 +421,7 @@ class ApiService {
   static Future<bool> deleteEmergencyContact(int contactId) async {
     try {
       final response = await http
-          .delete(Uri.parse('$baseUrl/api/contacts/$contactId'))
+          .delete(Uri.parse('$baseUrl/api/contacts/$contactId'), headers: _headers)
           .timeout(_timeout);
       return response.statusCode == 200;
     } catch (e) {
@@ -422,7 +438,7 @@ class ApiService {
       final response = await http
           .post(
             Uri.parse('$baseUrl/api/sms/send'),
-            headers: {'Content-Type': 'application/json'},
+            headers: _headers,
             body: jsonEncode({
               'phones': phoneNumbers,
               'message': message,
@@ -444,7 +460,7 @@ class ApiService {
   static Future<List<Map<String, dynamic>>> getSosHistory(int userId) async {
     try {
       final response = await http
-          .get(Uri.parse('$baseUrl/api/sos/$userId'))
+          .get(Uri.parse('$baseUrl/api/sos/$userId'), headers: _headers)
           .timeout(_timeout);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);

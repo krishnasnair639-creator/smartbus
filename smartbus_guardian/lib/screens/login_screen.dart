@@ -58,9 +58,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => _isLoading = true);
 
-    // TODO: Replace this block with your actual Flask backend login call.
-    // For now, credentials are checked against AuthService, which persists
-    // accounts locally on the device (filled in via RegisterScreen).
+    // Authenticate credentials via AuthService, which checks local secure
+    // storage and syncs with Flask backend API (/api/login).
     final error = await AuthService.instance.login(
       identifier: _identifierController.text,
       password: _passwordController.text,

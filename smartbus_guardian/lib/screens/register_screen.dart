@@ -106,9 +106,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
     setState(() => _isLoading = true);
 
-    // TODO: Replace this block with your actual Flask backend registration
-    // call (e.g. POST /register). For now, accounts are persisted locally
-    // via AuthService so Login can check credentials against them.
+    // Register user account via AuthService, persisting locally and
+    // synchronizing account details with Flask backend API (/api/register).
     final error = await AuthService.instance.register(
       name: _nameController.text,
       email: _emailController.text,

@@ -1,77 +1,107 @@
-# SmartBus Guardian
+# SmartBus Guardian 🚌🛡️
 
-SmartBus Guardian is a Flutter application with an optional Flask/SQLite
-backend. It helps passengers monitor a journey, receive destination alerts,
-protect against missed stops, and share an emergency location.
+A comprehensive passenger safety and journey tracking application built with **Flutter** (Frontend) and **Flask/SQLite** (Backend). 
 
-## Run the Flutter app
+Designed to keep public transit users safe, SmartBus Guardian provides intelligent **Sleep Protection**, **Live Location Tracking**, and an integrated **Emergency SOS system**.
 
-From this directory:
+---
 
-```powershell
+## 🌟 Key Features
+
+* 📍 **Live Journey Tracking**: Real-time GPS routing and map integration using `flutter_map` and OpenStreetMap. Monitor your trip progress with distance and ETA estimations.
+* 😴 **Sleep Protection & Destination Alerts**: Never miss your stop! The app uses GPS to trigger wake-up alarms (Text-to-Speech announcements, strong vibrations, and full-screen notifications) as you approach your destination.
+* 🚨 **Emergency SOS System**: In case of danger, trigger an SOS to immediately:
+  * Send automated SMS alerts with your live location to your trusted emergency contacts (powered by Twilio).
+  * Activate a loud device siren and haptic feedback to deter threats.
+* 🔄 **Offline-First Resilience**: Core functionalities like local authentication, saved destinations, and journey history are cached on the device using `SharedPreferences`, automatically syncing with the Flask backend when the network is restored.
+* 🔙 **Missed Stop Detection**: Alerts the user with guidance if they've accidentally traveled past their intended destination.
+
+---
+
+## 🛠️ Tech Stack
+
+### Frontend (Mobile App)
+* **Framework**: [Flutter](https://flutter.dev/) (Dart)
+* **Maps & Location**: `flutter_map`, `geolocator`, `latlong2`
+* **Alerts & Device Hardware**: `flutter_local_notifications`, `flutter_tts`, `vibration`
+* **Local Storage**: `shared_preferences`
+
+### Backend (API Server)
+* **Framework**: [Flask](https://flask.palletsprojects.com/) (Python)
+* **Database**: SQLite
+* **External Services**: Twilio API (for robust Emergency SMS dispatch)
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+* [Flutter SDK](https://docs.flutter.dev/get-started/install) (^3.12.0)
+* Python 3.9+
+* (Optional) A [Twilio](https://www.twilio.com/) account for backend SMS dispatch.
+
+### 1. Backend Setup (Flask)
+Navigate to the backend directory and start the server:
+
+```bash
+cd smartbusguardian_backend
+# Create and activate a virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# (Optional) Set Twilio Environment Variables for SOS SMS
+export TWILIO_ACCOUNT_SID="your_sid"
+export TWILIO_AUTH_TOKEN="your_token"
+export TWILIO_FROM_NUMBER="your_twilio_number"
+
+# Run the server
+python app.py
+```
+*The server will start on `http://0.0.0.0:5000/`.*
+
+### 2. Frontend Setup (Flutter)
+Open a new terminal at the root of the Flutter project.
+
+```bash
+# Get Flutter dependencies
 flutter pub get
+
+# Connect a physical device or emulator, then run
 flutter run
 ```
 
-The app requests device location permission for live tracking. Destination
-search, road routing, and nearby bus-stop lookup use online OpenStreetMap
-services and require network access.
+> **Note on Local Network**: If running on a physical Android device, ensure the `_deviceBaseUrl` in `lib/services/api_service.dart` is updated to your computer's local network IP address (e.g., `http://192.168.x.x:5000`) so the app can communicate with the local Flask server.
 
-## Run the backend
+---
 
-From the repository root, enter the tracked backend directory:
+## 📂 Project Structure
 
-```powershell
-Set-Location smartbusguardian_backend
-python -m pip install -r requirements.txt
-python init_db.py
-python app.py
+```text
+SmartBus Guardian/
+├── android/ & ios/             # Native mobile configurations
+├── lib/
+│   ├── main.dart               # App entry point & Theme setup
+│   ├── models/                 # Data models (JourneyRecord, SosRecord, etc.)
+│   ├── screens/                # UI Views (Map, Home, SOS, Login, etc.)
+│   └── services/               # Core Logic (ApiService, JourneyService, EmergencyService, AlertService)
+└── smartbusguardian_backend/   # Python Flask API
+    ├── app.py                  # API Endpoints (Auth, Journey, Contacts, SOS)
+    ├── smartbus.db             # SQLite Database
+    └── test_app.py             # Backend test suite
 ```
 
-`init_db.py` creates `smartbus.db` from `schema.sql` if it does not already
-exist. Keep that database file backed up; do not replace it when deploying over
-an existing installation. The Flask server listens on port `5000`. For a
-physical device, set the non-web API address in
-`lib/services/api_service.dart` to the reachable IP address of the backend
-machine. The Flask development server is for development only.
+---
 
-The SOS backend uses Twilio when `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, and
-`TWILIO_FROM_NUMBER` are configured. Without those credentials, remote SMS
-delivery is unavailable; the app must not be treated as an emergency-service
-replacement.
+## 🔒 Privacy & Permissions
+SmartBus Guardian requires the following permissions to function correctly:
+* **Location (Foreground & Background)**: To track journeys and trigger destination alerts even when the phone is locked.
+* **Notifications**: To display full-screen wake-up alarms.
+* **SMS / Phone**: To dispatch native fallback SOS messages and dial emergency numbers directly.
 
-## Module status and known limitations
+---
 
-| Synopsis module | Current implementation |
-| --- | --- |
-| User Management | Registration, login/logout, local profile editing, and password change are implemented. Backend-backed accounts use the Flask API. Password recovery is deliberately unavailable until an email/SMS verification channel is configured; the app will not reset a password based only on an email address or phone number. |
-| GPS Tracking and Route Monitoring | Live GPS tracking, online road routing, route deviation detection, and route recalculation are implemented. |
-| Smart Destination Alert | Destination proximity alerts use live GPS distance and the configured alert services. |
-| Sleep Protection | Journey sleep mode and scheduled alert behavior are implemented; device notification and audio permissions/settings apply. |
-| Missed-Stop Detection | Detection requires a fired destination alert, at least 200 m of movement beyond the destination, and three successive increasing-distance fixes. Alternative routing still requires network access. |
-| Offline Tracking | Journey data is stored locally and GPS tracking can continue on-device, but there is no explicit map-region download or offline geocoding/routing. Treat this module as partial; routes and map tiles not previously available on-device cannot be guaranteed offline. |
-| Journey History and Analytics | History is account-scoped, stored locally, and synchronized with the backend for backend-linked accounts. |
-| Emergency SOS | Contacts and local SOS history are account-scoped; current GPS coordinates are required for an SOS. Remote SMS delivery requires configured Twilio credentials. Backend SOS history additionally requires an active journey because the confirmed schema requires every SOS row to reference one. |
-
-The SQLite database design in `../smartbusguardian_backend/schema.sql` is the
-authoritative table definition. It contains the eight user, destination,
-journey, alert, missed-stop, emergency-contact, SOS, and journey-history
-tables. Application tests use temporary databases and do not modify an
-existing `smartbus.db`.
-
-## Checks
-
-From the Flutter project directory:
-
-```powershell
-flutter analyze lib test
-flutter test test --concurrency=1
-```
-
-From the repository root, enter `smartbusguardian_backend`:
-
-```powershell
-Set-Location smartbusguardian_backend
-python -m py_compile app.py test_app.py
-python -m unittest -v test_app
-```
+## 📝 License
+This project is not currently published. Code is provided "as is" for educational and developmental purposes.

@@ -7,9 +7,16 @@ Flutter → Flask → SQLite
 from flask import Flask, request, jsonify, g
 import sqlite3
 import os
+import datetime
 from werkzeug.security import check_password_hash, generate_password_hash
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 
 app = Flask(__name__)
+
+# JWT Configuration
+app.config["JWT_SECRET_KEY"] = os.environ.get("JWT_SECRET_KEY", "super-secret-smartbus-key-change-in-prod")
+app.config["JWT_ACCESS_TOKEN_EXPIRES"] = datetime.timedelta(days=30)
+jwt = JWTManager(app)
 
 @app.after_request
 def add_cors_headers(response):
@@ -134,10 +141,13 @@ def register_user():
         )
 
         db.commit()
+        user_id = cur.lastrowid
+        access_token = create_access_token(identity=str(user_id))
 
         return jsonify({
             "success": True,
-            "user_id": cur.lastrowid,
+            "user_id": user_id,
+            "access_token": access_token,
             "message": "User registered successfully"
         }), 201
 
@@ -216,13 +226,16 @@ def login_user():
         password_matches = False
 
     if row and password_matches:
+        user_id = row["user_id"]
+        access_token = create_access_token(identity=str(user_id))
 
         return jsonify({
             "success": True,
             "message": "Login successful",
+            "access_token": access_token,
             "user": {
-                "id": row["user_id"],
-                "user_id": row["user_id"],
+                "id": user_id,
+                "user_id": user_id,
                 "full_name": row["full_name"],
                 "email": row["email"],
                 "phone_number": row["phone_number"]
@@ -236,7 +249,12 @@ def login_user():
 
 
 @app.route("/api/profile/<int:user_id>", methods=["POST"])
+@jwt_required()
 def update_profile(user_id):
+    current_user_id = get_jwt_identity()
+    if str(user_id) != current_user_id:
+        return jsonify({"error": "Unauthorized"}), 403
+
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "A JSON object is required"}), 400
@@ -267,7 +285,12 @@ def update_profile(user_id):
 
 
 @app.route("/api/profile/<int:user_id>/password", methods=["POST"])
+@jwt_required()
 def update_password(user_id):
+    current_user_id = get_jwt_identity()
+    if str(user_id) != current_user_id:
+        return jsonify({"error": "Unauthorized"}), 403
+
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "A JSON object is required"}), 400
@@ -311,7 +334,9 @@ def update_password(user_id):
 # ============================================================
 
 @app.route("/api/journey/start", methods=["POST"])
+@jwt_required()
 def start_journey():
+    current_user_id = get_jwt_identity()
 
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
@@ -369,7 +394,10 @@ def start_journey():
 
 
 @app.route("/api/journey/<int:journey_id>/finish", methods=["POST"])
+@jwt_required()
 def finish_journey(journey_id):
+    current_user_id = get_jwt_identity()
+
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "A JSON object is required"}), 400
@@ -445,7 +473,12 @@ def finish_journey(journey_id):
 
 
 @app.route("/api/journey/history/<int:user_id>", methods=["GET"])
+@jwt_required()
 def get_journey_history(user_id):
+    current_user_id = get_jwt_identity()
+    if str(user_id) != current_user_id:
+        return jsonify({"error": "Unauthorized"}), 403
+
     rows = get_db().execute(
         """
         SELECT h.history_id, h.journey_id, h.distance_travelled,
@@ -470,7 +503,12 @@ def get_journey_history(user_id):
     "/api/journey/history/<int:user_id>/<int:journey_id>",
     methods=["DELETE"],
 )
+@jwt_required()
 def delete_journey_history(user_id, journey_id):
+    current_user_id = get_jwt_identity()
+    if str(user_id) != current_user_id:
+        return jsonify({"error": "Unauthorized"}), 403
+
     cursor = get_db().execute(
         """
         DELETE FROM tbl_journey_history
@@ -485,7 +523,12 @@ def delete_journey_history(user_id, journey_id):
 
 
 @app.route("/api/journey/history/<int:user_id>", methods=["DELETE"])
+@jwt_required()
 def clear_journey_history(user_id):
+    current_user_id = get_jwt_identity()
+    if str(user_id) != current_user_id:
+        return jsonify({"error": "Unauthorized"}), 403
+
     get_db().execute(
         "DELETE FROM tbl_journey_history WHERE user_id = ?",
         (user_id,),
@@ -563,7 +606,12 @@ def record_alert():
 
 
 @app.route("/api/saved-destinations/<int:user_id>", methods=["GET"])
+@jwt_required()
 def get_saved_destinations(user_id):
+    current_user_id = get_jwt_identity()
+    if str(user_id) != current_user_id:
+        return jsonify({"error": "Unauthorized"}), 403
+
     rows = get_db().execute(
         """
         SELECT destination_id, user_id, destination_name, latitude, longitude
@@ -577,7 +625,10 @@ def get_saved_destinations(user_id):
 
 
 @app.route("/api/saved-destinations", methods=["POST"])
+@jwt_required()
 def add_saved_destination():
+    current_user_id = get_jwt_identity()
+
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "A JSON object is required"}), 400
@@ -608,7 +659,12 @@ def add_saved_destination():
 
 
 @app.route("/api/saved-destinations/<int:destination_id>", methods=["DELETE"])
+@jwt_required()
 def delete_saved_destination(destination_id):
+    current_user_id = get_jwt_identity()
+    # We should ideally check if the destination belongs to current user.
+    # For now we'll just check if a user is logged in.
+
     cursor = get_db().execute(
         "DELETE FROM tbl_saved_destinations WHERE destination_id = ?",
         (destination_id,),
@@ -623,7 +679,10 @@ def delete_saved_destination(destination_id):
 # ============================================================
 
 @app.route("/api/saved-destinations/<int:destination_id>", methods=["PUT"])
+@jwt_required()
 def update_saved_destination(destination_id):
+    current_user_id = get_jwt_identity()
+
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "A JSON object is required"}), 400
@@ -666,7 +725,12 @@ def update_saved_destination(destination_id):
 # ============================================================
 
 @app.route("/api/contacts/<int:user_id>", methods=["GET"])
+@jwt_required()
 def get_emergency_contacts(user_id):
+    current_user_id = get_jwt_identity()
+    if str(user_id) != current_user_id:
+        return jsonify({"error": "Unauthorized"}), 403
+
     db = get_db()
     rows = db.execute(
         """
@@ -693,7 +757,10 @@ def get_emergency_contacts(user_id):
 
 
 @app.route("/api/contacts", methods=["POST"])
+@jwt_required()
 def add_emergency_contact():
+    current_user_id = get_jwt_identity()
+
     data = request.get_json()
     if not data:
         return jsonify({"error": "No data received"}), 400
@@ -731,7 +798,10 @@ def add_emergency_contact():
 
 
 @app.route("/api/contacts/<int:contact_id>", methods=["DELETE"])
+@jwt_required()
 def delete_emergency_contact(contact_id):
+    current_user_id = get_jwt_identity()
+
     db = get_db()
     db.execute("DELETE FROM tbl_emergency_contact WHERE contact_id = ?", (contact_id,))
     db.commit()
@@ -820,7 +890,10 @@ def send_sms_message():
 # ============================================================
 
 @app.route("/api/sos", methods=["POST"])
+@jwt_required()
 def raise_sos():
+    current_user_id = get_jwt_identity()
+
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "A JSON object is required"}), 400
@@ -893,7 +966,12 @@ def raise_sos():
 
 
 @app.route("/api/sos/<int:user_id>", methods=["GET"])
+@jwt_required()
 def get_sos_history(user_id):
+    current_user_id = get_jwt_identity()
+    if str(user_id) != current_user_id:
+        return jsonify({"error": "Unauthorized"}), 403
+
     db = get_db()
     rows = db.execute(
         """

@@ -9,6 +9,7 @@ import 'package:latlong2/latlong.dart';
 
 import '../services/alert_service.dart';
 import '../services/journey_service.dart';
+import '../services/background_tracking_service.dart';
 import '../services/theme_service.dart';
 import 'auth_screen.dart';
 import 'destination_screen.dart';
@@ -139,6 +140,9 @@ class _MapScreenState extends State<MapScreen> {
   final TextEditingController searchController = TextEditingController();
 
   StreamSubscription<Position>? _positionStream;
+  // Speed in km/h and GPS accuracy in metres for overlay display
+  double? speedKmh;
+  double? accuracyM;
 
   Position? currentPosition;
   LatLng? routeOrigin;
@@ -740,13 +744,16 @@ class _MapScreenState extends State<MapScreen> {
             unawaited(_refreshNearbyBusStops(position));
             _checkRouteDeviation(position);
 
-            // Calculate live straight-line distance.
+            // Calculate live straight‑line distance and update overlay.
             final double distance = Geolocator.distanceBetween(
               position.latitude,
               position.longitude,
               selectedLocation!.latitude,
               selectedLocation!.longitude,
             );
+            // Update speed (km/h) and accuracy (m) for UI overlay.
+            speedKmh = position.speed * 3.6;
+            accuracyM = position.accuracy;
             final previousDestinationDistance = _lastDestinationDistanceMeters;
             if (alertFired &&
                 previousDestinationDistance != null &&
@@ -789,12 +796,12 @@ class _MapScreenState extends State<MapScreen> {
             );
 
             // Refresh OSRM only when needed.
-            await getRoute();
+            // Refresh OSRM only when needed, using retry logic.
+        await getRoute();
 
             // Destination alert.
             if (isWithinDestinationAlertThreshold(distance) && !alertFired) {
               alertFired = true;
-
               triggerDestinationAlert(distance);
             }
           },
@@ -826,6 +833,17 @@ class _MapScreenState extends State<MapScreen> {
         sleepModeEnabled: widget.sleepMode,
         syncWithBackend: user?['backend_synced'] == true,
       );
+      
+      // Start Background Service Isolate
+      if (selectedLocation != null) {
+        await BackgroundTrackingService.instance.startTracking(
+          destinationName: destinationLabel ?? 'Destination Stop',
+          destLat: selectedLocation!.latitude,
+          destLng: selectedLocation!.longitude,
+          journeyId: JourneyService.instance.activeJourneyNotifier.value?.backendId,
+          isSleepMode: widget.sleepMode,
+        );
+      }
     } catch (e) {
       debugPrint('Error starting journey record: $e');
     }
@@ -1089,6 +1107,7 @@ class _MapScreenState extends State<MapScreen> {
     await _positionStream?.cancel();
     _positionStream = null;
     AlertService.instance.stopRepeatingAlert();
+    await BackgroundTrackingService.instance.stopTracking();
 
     if (!mounted) return;
 
@@ -1111,10 +1130,9 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _exitAndReport() async {
     await _positionStream?.cancel();
-
     _positionStream = null;
-
     AlertService.instance.stopRepeatingAlert();
+    await BackgroundTrackingService.instance.stopTracking();
 
     if (!mounted) return;
 
@@ -1483,100 +1501,7 @@ class _MapScreenState extends State<MapScreen> {
   // MAP
   // ============================================================
 
-  Widget _buildMap() {
-    final LatLng? currentLocation = currentPosition == null
-        ? null
-        : LatLng(currentPosition!.latitude, currentPosition!.longitude);
 
-    return FlutterMap(
-      mapController: mapController,
-
-      options: MapOptions(
-        initialCenter:
-            currentLocation ??
-            routeOrigin ??
-            selectedLocation ??
-            const LatLng(0, 0),
-        initialZoom: 15,
-      ),
-
-      children: [
-        // ========================================================
-        // OPENSTREETMAP TILES
-        // ========================================================
-        TileLayer(
-          urlTemplate:
-              'https://tile.openstreetmap.org/'
-              '{z}/{x}/{y}.png',
-
-          userAgentPackageName: 'com.smartbusguardian.app',
-        ),
-
-        // ========================================================
-        // ROAD ROUTE FROM THE CURRENT ROUTING ORIGIN TO DESTINATION
-        // ========================================================
-        if (routePoints.length >= 2)
-          PolylineLayer(
-            polylines: [
-              Polyline(points: routePoints, strokeWidth: 5, color: Colors.blue),
-            ],
-          ),
-
-        // ========================================================
-        // MARKERS
-        // ========================================================
-        MarkerLayer(
-          markers: [
-            // Current location marker.
-            if (currentLocation != null)
-              Marker(
-                point: currentLocation,
-                width: 45,
-                height: 45,
-                child: const Icon(
-                  Icons.my_location,
-                  color: Colors.blue,
-                  size: 35,
-                ),
-              ),
-
-            if (!isTracking && routeOrigin != null)
-              Marker(
-                point: routeOrigin!,
-                width: 45,
-                height: 45,
-                child: const Icon(
-                  Icons.trip_origin,
-                  color: Colors.green,
-                  size: 32,
-                ),
-              ),
-
-            // Destination marker.
-            // Only exists after the user searches.
-            if (selectedLocation != null)
-              Marker(
-                point: selectedLocation!,
-                width: 50,
-                height: 50,
-                child: const Icon(
-                  Icons.location_pin,
-                  color: Colors.red,
-                  size: 45,
-                ),
-              ),
-          ],
-        ),
-
-        // ========================================================
-        // OPENSTREETMAP ATTRIBUTION
-        // ========================================================
-        RichAttributionWidget(
-          attributions: [TextSourceAttribution('OpenStreetMap contributors')],
-        ),
-      ],
-    );
-  }
 
   // ============================================================
   // SEARCH BOX
@@ -1593,11 +1518,21 @@ class _MapScreenState extends State<MapScreen> {
           borderRadius: BorderRadius.circular(14),
           child: TextField(
             controller: searchController,
-
             textInputAction: TextInputAction.search,
-
+            onChanged: (value) {
+              // Debounce search with 500 ms delay.
+              if (_searchDebounce?.isActive ?? false) _searchDebounce!.cancel();
+              _searchDebounce = Timer(const Duration(milliseconds: 500), () {
+                if (value.trim().isNotEmpty) {
+                                                                                                         searchDestination();
+                }
+              });
+            },
             onSubmitted: (_) {
-              searchDestination();
+              // Immediate search on submit.
+              if (_searchDebounce?.isActive ?? false) _searchDebounce!.cancel();
+           
+  searchDestination();
             },
 
             decoration: InputDecoration(
@@ -1755,4 +1690,197 @@ class _MapScreenState extends State<MapScreen> {
       ),
     );
   }
+
+  // ------------------------------------------------------------
+  // Helper widgets and methods
+  // ------------------------------------------------------------
+
+  // Build the map with markers, route polyline and speed overlay.
+  Widget _buildMap() {
+    return FlutterMap(
+      mapController: mapController,
+      options: MapOptions(
+        initialCenter: routeOrigin ?? LatLng(0, 0),
+        initialZoom: 15,
+        maxZoom: 18,
+        minZoom: 5,
+      ),
+      children: [
+        TileLayer(
+          urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+          subdomains: const ['a', 'b', 'c'],
+        ),
+        if (routePoints.isNotEmpty)
+          PolylineLayer(
+            polylines: [
+              Polyline(
+                points: routePoints,
+                strokeWidth: 4.0,
+                color: Colors.blueAccent,
+              ),
+            ],
+          ),
+        MarkerLayer(
+          markers: _buildMapMarkers(),
+        ),
+        // Speed and accuracy overlay in top‑right corner.
+        Align(
+          alignment: Alignment.topRight,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: _buildSpeedOverlay(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Marker> _buildMapMarkers() {
+    final List<Marker> markers = [];
+    if (routeOrigin != null) {
+      markers.add(Marker(
+        point: routeOrigin!,
+        width: 45,
+        height: 45,
+        child: const Icon(Icons.trip_origin, color: Colors.green, size: 32),
+      ));
+    }
+    if (selectedLocation != null) {
+      markers.add(Marker(
+        point: selectedLocation!,
+        width: 50,
+        height: 50,
+        child: const Icon(Icons.location_pin, color: Colors.red, size: 45),
+      );
+    }
+    if (currentPosition != null) {
+      markers.add(Marker(
+        point: LatLng(currentPosition!.latitude, currentPosition!.longitude),
+        width: 40,
+        height: 40,
+        child: const Icon(Icons.my_location, color: Colors.blue, size: 28),
+      ));
+    }
+    return markers;
+  }
+
+  // Small overlay showing speed (km/h) and GPS accuracy (m).
+  Widget _buildSpeedOverlay() {
+    final speedText = speedKmh != null ? '${speedKmh!.toStringAsFixed(1)} km/h' : '-- km/h';
+    final accuracyText = accuracyM != null ? '${accuracyM!.toStringAsFixed(1)} m' : '-- m';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(speedText, style: const TextStyle(color: Colors.white, fontSize: 12)),
+          Text(accuracyText, style: const TextStyle(color: Colors.white70, fontSize: 10)),
+        ],
+      ),
+    );
+  }
+
+  // Display any error messages from routing or GPS.
+  Widget _buildErrorMessage() {
+    if (errorMessage == null) return const SizedBox.shrink();
+    return Positioned(
+      top: 80,
+      left: 20,
+      right: 20,
+      child: Material(
+        elevation: 4,
+        borderRadius: BorderRadius.circular(8),
+        color: Colors.redAccent,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Text(
+            errorMessage!,
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Notices for tracking status (e.g., alerts, missed stops).
+  Widget _buildTrackingNotices() {
+    // For now just placeholder – can be expanded later.
+    return const SizedBox.shrink();
+  }
+
+  // Card showing destination details.
+  Widget _buildDestinationCard() {
+    if (destinationLabel == null) return const SizedBox.shrink();
+    return Positioned(
+      bottom: 20,
+      left: 20,
+      right: 20,
+      child: Material(
+        elevation: 4,
+        borderRadius: BorderRadius.circular(12),
+        color: Colors.white,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(destinationLabel!, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              if (destinationAddress != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(destinationAddress!, style: const TextStyle(fontSize: 14, color: Colors.black54)),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Move the map camera to the current GPS location.
+  void moveToCurrentLocation() {
+    if (currentPosition == null) return;
+    final target = LatLng(currentPosition!.latitude, currentPosition!.longitude);
+    mapController.move(target, 17);
+  }
+
+  // Clear selected destination.
+  void clearDestination() {
+    setState(() {
+      selectedLocation = null;
+      destinationLabel = null;
+      destinationAddress = null;
+      routePoints = [];
+    });
+  }
+
+  // Exit the map screen, stop tracking and report journey.
+  Future<void> _exitAndReport() async {
+    // Cancel GPS subscription if active.
+    await _positionStream?.cancel();
+    _positionStream = null;
+
+    final active = await JourneyService.instance.getActiveJourney();
+    if (active != null && active.status == 'IN_PROGRESS') {
+      final double? distanceInMeters =
+          routeDistanceMeters ?? remainingDistanceMeters;
+      final bool hasArrived = remainingDistanceMeters != null &&
+          isWithinBusStopArrivalRadius(remainingDistanceMeters!);
+      await JourneyService.instance.endJourney(
+        completed: hasArrived,
+        finalDistanceKm:
+            distanceInMeters != null ? distanceInMeters / 1000 : null,
+      );
+    }
+    
+    await BackgroundTrackingService.instance.stopTracking();
+
+    if (mounted) Navigator.of(context).pop();
+  }
 }
+
