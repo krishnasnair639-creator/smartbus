@@ -618,6 +618,48 @@ def delete_saved_destination(destination_id):
         return jsonify({"error": "Saved destination not found"}), 404
     return jsonify({"success": True}), 200
 
+# ============================================================
+# UPDATE SAVED DESTINATION
+# ============================================================
+
+@app.route("/api/saved-destinations/<int:destination_id>", methods=["PUT"])
+def update_saved_destination(destination_id):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "A JSON object is required"}), 400
+    try:
+        user_id = int(data["user_id"])
+        name = data.get("destination_name", "").strip()
+        latitude = float(data["latitude"])
+        longitude = float(data["longitude"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({"error": "user_id, destination_name and valid coordinates are required"}), 400
+    if not name:
+        return jsonify({"error": "destination_name cannot be empty"}), 400
+    # Verify ownership
+    cur = get_db().execute(
+        "SELECT user_id FROM tbl_saved_destinations WHERE destination_id = ?",
+        (destination_id,)
+    ).fetchone()
+    if cur is None or cur["user_id"] != user_id:
+        return jsonify({"error": "Destination not found or not owned by user"}), 404
+    # Prevent duplicate for same user (same name and coordinates)
+    exists = get_db().execute(
+        "SELECT destination_id FROM tbl_saved_destinations WHERE user_id = ? AND destination_name = ? AND latitude = ? AND longitude = ? AND destination_id != ?",
+        (user_id, name, latitude, longitude, destination_id)
+    ).fetchone()
+    if exists:
+        return jsonify({"error": "Another saved destination with same details already exists"}), 400
+    try:
+        get_db().execute(
+            "UPDATE tbl_saved_destinations SET destination_name = ?, latitude = ?, longitude = ? WHERE destination_id = ?",
+            (name, latitude, longitude, destination_id)
+        )
+        get_db().commit()
+    except sqlite3.IntegrityError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"success": True, "destination_id": destination_id}), 200
+
 
 # ============================================================
 # EMERGENCY CONTACTS
